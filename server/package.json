@@ -1,0 +1,28 @@
+{
+  "name": "trackit-server",
+  "version": "1.0.0",
+  "description": "Backend API for TrackIt Workout Tracker",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "jsonwebtoken": "^9.0.3",
+    "mongoose": "^8.9.5",
+    "openai": "^4.82.0",
+    "zod": "^3.24.1"
+  },
+  "keywords": [
+    "express",
+    "workout",
+    "openai",
+    "mongodb"
+  ],
+  "author": "",
+  "license": "MIT"
+}

@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "TrackIt",
+    "slug": "trackit",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "scheme": "trackit",
+    "backgroundColor": "#0B0F17",
+    "web": {
+      "bundler": "metro",
+      "output": "single"
+    },
+    "plugins": [
+      "expo-router"
+    ]
+  }
+}

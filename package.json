@@ -1,0 +1,28 @@
+{
+  "name": "trackit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "TrackIt - Minimalist Cross-Platform Workout Tracking Application",
+  "workspaces": [
+    "server",
+    "client"
+  ],
+  "scripts": {
+    "dev:server": "cd server && npm run dev",
+    "start:server": "cd server && npm start",
+    "dev:client": "cd client && npx expo start --web",
+    "start:client": "cd client && npx expo start",
+    "install:all": "npm --prefix server install && npm --prefix client install"
+  },
+  "keywords": [
+    "workout",
+    "fitness",
+    "react-native",
+    "expo",
+    "express",
+    "mongodb",
+    "openai"
+  ],
+  "author": "",
+  "license": "MIT"
+}
