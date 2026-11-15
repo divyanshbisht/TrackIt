@@ -50,7 +50,10 @@ export const useSettingsStore = create((set, get) => ({
         set({
           isRestTimerEnabled: parsed.isRestTimerEnabled !== undefined ? parsed.isRestTimerEnabled : true,
           defaultRestDuration: parsed.defaultRestDuration || 90,
-          apiBaseUrl: parsed.apiBaseUrl || DEFAULT_API_URL,
+          apiBaseUrl:
+            DEFAULT_API_URL && DEFAULT_API_URL !== 'http://localhost:5000'
+              ? DEFAULT_API_URL
+              : parsed.apiBaseUrl || DEFAULT_API_URL,
           isLoaded: true,
         });
       } else {
