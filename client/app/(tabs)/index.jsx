@@ -41,6 +41,7 @@ import {
 import WorkoutHistoryCard from '../../components/WorkoutHistoryCard';
 import CustomizeSplitModal from '../../components/CustomizeSplitModal';
 import ManageSplitsModal from '../../components/ManageSplitsModal';
+import AICoachCard from '../../components/AICoachCard';
 
 export default function HomeScreen() {
   const router = useRouter();
@@ -60,6 +61,7 @@ export default function HomeScreen() {
   const [isStartingSplit, setIsStartingSplit] = useState(false);
   const [isCustomizeOpen, setIsCustomizeOpen] = useState(false);
   const [isManageSplitsOpen, setIsManageSplitsOpen] = useState(false);
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   // Load all PRs and past workouts
   const loadData = useCallback(async () => {
@@ -82,6 +84,7 @@ export default function HomeScreen() {
 
   const onRefresh = async () => {
     setRefreshing(true);
+    setRefreshTrigger((prev) => prev + 1);
     await loadData();
     setRefreshing(false);
   };
@@ -348,6 +351,9 @@ export default function HomeScreen() {
           <Plus size={16} color="#64748B" />
           <Text style={styles.emptyStartText}>Or start a blank session without template</Text>
         </TouchableOpacity>
+
+        {/* 🤖 AI Strength Coach (Plateau Detection & Volume Balancer) */}
+        <AICoachCard activeSplit={currentSplitKey} refreshTrigger={refreshTrigger} />
 
         {/* 🏋️ Workout History Section (THE LOGGED WORKOUTS!) */}
         <View style={styles.sectionHeaderRow}>

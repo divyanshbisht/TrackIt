@@ -3,6 +3,9 @@ const path = require('path');
 const { z } = require('zod');
 const { zodResponseFormat } = require('openai/helpers/zod');
 const { openai, isOpenAIConfigured } = require('../config/openai');
+const Workout = require('../models/Workout');
+const PersonalRecord = require('../models/PersonalRecord');
+const { getDBStatus } = require('../config/db');
 
 // Structured Output Schema
 const SetOutputSchema = z.object({
@@ -23,6 +26,33 @@ const ExerciseOutputSchema = z.object({
 const RoutineOutputSchema = z.object({
   splitName: z.string(),
   exercises: z.array(ExerciseOutputSchema),
+});
+
+// AI Coach Insights Structured Output Schema
+const PlateauAlertSchema = z.object({
+  exerciseName: z.string(),
+  currentMetric: z.string().describe("e.g. '80 kg × 8 reps across recent sessions'"),
+  observation: z.string().describe("Brief note on stagnation or rep barrier"),
+  prescription: z.string().describe("Actionable advice: exact weight/rep target, micro-load, or technique adjustment"),
+});
+
+const CoachInsightSchema = z.object({
+  status: z.enum(['optimal', 'plateau_warning', 'volume_imbalance', 'getting_started']),
+  headline: z.string().describe("Punchy 4-7 word headline e.g. 'Push Volume Optimal, Pull Lagging'"),
+  overview: z.string().describe("1-2 sentences on recent consistency, intensity, and progressive overload"),
+  plateauAlerts: z.array(PlateauAlertSchema),
+  volumeBalance: z.object({
+    pushSets: z.number(),
+    pullSets: z.number(),
+    legsSets: z.number(),
+    summary: z.string().describe("Muscle group balance advice e.g. 'Ratio is 2.2:1. Add horizontal pulls.'"),
+  }),
+  todayTarget: z.object({
+    splitFocus: z.string(),
+    keyExercise: z.string(),
+    recommendedAction: z.string().describe("Actionable target for today's active session"),
+  }),
+  prsHighlighted: z.array(z.string()).describe("Recent PR achievements or momentum builders"),
 });
 
 const SYSTEM_PROMPT = `
@@ -381,5 +411,331 @@ exports.parseWorkout = async (req, res) => {
   } catch (error) {
     console.error('[AI Controller Error]:', error);
     return res.status(500).json({ error: 'Internal server error parsing workout routine' });
+  }
+};
+
+const COACH_SYSTEM_PROMPT = `
+You are an elite Exercise Physiologist & Strength Coach for the app "TrackIt".
+Your goal is to analyze the lifter's actual historical workout data from MongoDB and diagnose:
+1. True Plateaus: Identical top weight & reps across consecutive workouts. Provide specific micro-loading advice (e.g. +1.25kg to +2.5kg, or adding 1-2 reps at current weight before jumping, or adding a drop set).
+2. Push / Pull / Legs Volume Balance: Recommend adjustments to maintain posture and shoulder joint stability (ideal Push:Pull ratio is close to 1:1).
+3. Today's Tactical Focus: Give a concrete, actionable recommendation for today's active split.
+Always provide realistic, science-based, encouraging strength coaching without fluff.
+`;
+
+function generateFallbackCoachInsights({
+  workouts,
+  prs,
+  activeSplit,
+  pushSets,
+  pullSets,
+  legsSets,
+  plateauCandidates,
+}) {
+  let balanceSummary = 'Push and Pull set volume is well-proportioned across recent workouts.';
+  let status = 'optimal';
+
+  if (pushSets > 0 && pullSets > 0) {
+    const ratio = (pushSets / pullSets).toFixed(1);
+    if (pushSets > pullSets * 1.6) {
+      status = 'volume_imbalance';
+      balanceSummary = `Push-to-Pull set ratio is ${ratio}:1. Add 3-4 sets of horizontal pulls (e.g. Chest-Supported Rows) to maintain balanced shoulder mechanics.`;
+    } else if (pullSets > pushSets * 1.6) {
+      balanceSummary = `Pull volume is exceeding Push (${ratio}:1). Ensure sufficient horizontal and overhead pressing volume.`;
+    }
+  }
+
+  const plateauAlerts = [];
+  if (plateauCandidates && plateauCandidates.length > 0) {
+    status = 'plateau_warning';
+    for (const p of plateauCandidates.slice(0, 3)) {
+      plateauAlerts.push({
+        exerciseName: p.name,
+        currentMetric: `${p.topWeight} kg × ${p.topReps} reps (${p.count} sessions)`,
+        observation: `Identical top-set load across ${p.count} consecutive sessions indicating an intensity plateau.`,
+        prescription: `Micro-load +2.5 kg on your first working set, or target ${p.topReps + 1}-${p.topReps + 2} reps at current weight before increasing.`,
+      });
+    }
+  }
+
+  const prsHighlighted = (prs || [])
+    .slice(0, 3)
+    .map((pr) => `${pr.exerciseName}: ${pr.maxWeight} kg × ${pr.repsAtMax} reps`);
+
+  const splitLower = (activeSplit || 'Push').toLowerCase();
+  let keyEx = 'Barbell Bench Press';
+  let recommendedAction = 'Focus on progressive overload: aim for +1 rep or +2.5kg on your top compound set.';
+
+  if (splitLower.includes('pull')) {
+    keyEx = 'Barbell Bent-Over Row';
+    recommendedAction = 'Lock in scapular retraction and target +1 rep on your heaviest working set.';
+  } else if (splitLower.includes('leg')) {
+    keyEx = 'Barbell Back Squat';
+    recommendedAction = 'Prioritize deep knee flexion and controlled eccentric tempo for maximum quad recruitment.';
+  } else if (splitLower.includes('upper')) {
+    keyEx = 'Incline Dumbbell Press';
+    recommendedAction = 'Execute heavy compound press first with a 2-second negative tempo.';
+  } else if (splitLower.includes('lower')) {
+    keyEx = 'Romanian Deadlift';
+    recommendedAction = 'Maintain neutral spine and push hips back for high posterior chain tension.';
+  }
+
+  let headline = 'Progressive Overload on Track';
+  if (status === 'plateau_warning') headline = 'Plateau Detected: Micro-Load Advised';
+  else if (status === 'volume_imbalance') headline = 'Volume Imbalance: Push Dominant';
+
+  return {
+    status,
+    headline,
+    overview: `Analyzed ${workouts.length} recent workout session(s). Volume is tracked across ${
+      pushSets + pullSets + legsSets
+    } completed sets with progressive overload monitored.`,
+    plateauAlerts,
+    volumeBalance: {
+      pushSets,
+      pullSets,
+      legsSets,
+      summary: balanceSummary,
+    },
+    todayTarget: {
+      splitFocus: activeSplit || 'Active Routine',
+      keyExercise: keyEx,
+      recommendedAction,
+    },
+    prsHighlighted,
+  };
+}
+
+/**
+ * GET /api/ai/coach-insights
+ * POST /api/ai/coach-insights
+ * Analyzes the user's historical workout sessions from MongoDB (or offline request body)
+ * and generates progressive-overload and plateau-breaking recommendations.
+ */
+exports.getCoachInsights = async (req, res) => {
+  try {
+    const userId = req.user?.id || req.headers['x-user-id'] || req.query?.userId || 'default-user';
+    const activeSplit = req.query.activeSplit || req.body?.activeSplit || 'Push Day';
+
+    let workouts = [];
+    let prs = [];
+
+    if (getDBStatus()) {
+      workouts = await Workout.find({ userId })
+        .sort({ date: -1 })
+        .limit(10)
+        .lean();
+
+      prs = await PersonalRecord.find({ userId })
+        .sort({ achievedAt: -1 })
+        .limit(6)
+        .lean();
+    }
+
+    // Support offline passed history from client if DB returned empty
+    if (workouts.length === 0 && Array.isArray(req.body?.localWorkouts)) {
+      workouts = req.body.localWorkouts;
+    }
+    if (prs.length === 0 && Array.isArray(req.body?.localPRs)) {
+      prs = req.body.localPRs;
+    }
+
+    // If still no workouts, return beginner onboarding insights
+    if (!workouts || workouts.length === 0) {
+      return res.status(200).json({
+        success: true,
+        source: 'onboarding-coach',
+        data: {
+          status: 'getting_started',
+          headline: 'Welcome to TrackIt AI Strength Coach',
+          overview:
+            'Complete your first workout to unlock automated plateau detection, progressive overload micro-loading, and muscle volume balancing.',
+          plateauAlerts: [],
+          volumeBalance: {
+            pushSets: 0,
+            pullSets: 0,
+            legsSets: 0,
+            summary: 'Log your first workout to start tracking your Push vs. Pull volume ratio.',
+          },
+          todayTarget: {
+            splitFocus: activeSplit,
+            keyExercise: 'Primary Compound Lift',
+            recommendedAction: `Start your ${activeSplit} today! Focus on clean technique and setting baseline weights.`,
+          },
+          prsHighlighted: [],
+        },
+      });
+    }
+
+    // Analyze volume by muscle group
+    let pushSets = 0;
+    let pullSets = 0;
+    let legsSets = 0;
+
+    // Track exercise history: exerciseId -> { name, sessions: [{ date, topWeight, topReps }] }
+    const exerciseHistory = new Map();
+
+    for (const w of workouts) {
+      for (const ex of w.exercises || []) {
+        const mg = (ex.muscleGroup || '').toLowerCase();
+        const completedSets = (ex.sets || []).filter((s) => s.isCompleted);
+        const setCount = completedSets.length;
+
+        if (mg.includes('chest') || mg.includes('shoulder') || mg.includes('tricep')) {
+          pushSets += setCount;
+        } else if (
+          mg.includes('back') ||
+          mg.includes('bicep') ||
+          mg.includes('lat') ||
+          mg.includes('pull')
+        ) {
+          pullSets += setCount;
+        } else if (
+          mg.includes('leg') ||
+          mg.includes('quad') ||
+          mg.includes('hamstring') ||
+          mg.includes('glute') ||
+          mg.includes('calf')
+        ) {
+          legsSets += setCount;
+        }
+
+        if (completedSets.length > 0) {
+          let maxW = 0;
+          let repsAtMax = 0;
+          for (const s of completedSets) {
+            const wVal = Number(s.weight) || 0;
+            const rVal = Number(s.reps) || 0;
+            if (wVal > maxW || (wVal === maxW && rVal > repsAtMax)) {
+              maxW = wVal;
+              repsAtMax = rVal;
+            }
+          }
+
+          if (maxW > 0) {
+            const exId = ex.exerciseId || ex.name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            if (!exerciseHistory.has(exId)) {
+              exerciseHistory.set(exId, { name: ex.name, sessions: [] });
+            }
+            exerciseHistory.get(exId).sessions.push({
+              date: w.date || w.createdAt,
+              topWeight: maxW,
+              topReps: repsAtMax,
+            });
+          }
+        }
+      }
+    }
+
+    // Detect plateaus: topWeight and topReps identical across last 2 or more sessions
+    const plateauCandidates = [];
+    for (const [exId, data] of exerciseHistory.entries()) {
+      if (data.sessions.length >= 2) {
+        const s1 = data.sessions[0];
+        const s2 = data.sessions[1];
+        if (s1.topWeight === s2.topWeight && s1.topReps === s2.topReps) {
+          const s3Same =
+            data.sessions.length >= 3 && data.sessions[2].topWeight === s1.topWeight;
+          plateauCandidates.push({
+            exerciseId: exId,
+            name: data.name,
+            topWeight: s1.topWeight,
+            topReps: s1.topReps,
+            count: s3Same ? 3 : 2,
+          });
+        }
+      }
+    }
+
+    // Try OpenAI Structured Outputs if configured
+    if (isOpenAIConfigured()) {
+      try {
+        const historySummaryText = workouts
+          .slice(0, 5)
+          .map((w, i) => {
+            const dStr = new Date(w.date || w.createdAt).toLocaleDateString();
+            const topLifts = (w.exercises || [])
+              .map((e) => {
+                const maxSet = (e.sets || [])
+                  .filter((s) => s.isCompleted)
+                  .sort((a, b) => (Number(b.weight) || 0) - (Number(a.weight) || 0))[0];
+                return maxSet ? `${e.name} (${maxSet.weight}kg x ${maxSet.reps})` : e.name;
+              })
+              .join(', ');
+            return `Workout ${i + 1} (${dStr}, Split: ${w.splitName}): ${topLifts}`;
+          })
+          .join('\n');
+
+        const prSummaryText = (prs || [])
+          .slice(0, 5)
+          .map((p) => `${p.exerciseName}: ${p.maxWeight}kg x ${p.repsAtMax} reps`)
+          .join(', ');
+
+        const prompt = `
+Lifter's Active Split Today: ${activeSplit}
+Total Sets Logged: Push: ${pushSets}, Pull: ${pullSets}, Legs: ${legsSets}
+Recent PRs: ${prSummaryText || 'None recorded yet'}
+Plateau Candidates: ${
+          plateauCandidates.length > 0
+            ? plateauCandidates
+                .map(
+                  (c) =>
+                    `${c.name} at ${c.topWeight}kg x ${c.topReps} reps for ${c.count} sessions`
+                )
+                .join(', ')
+            : 'None currently flagged'
+        }
+
+Recent Workout History:
+${historySummaryText}
+
+Analyze this historical data and provide structured coaching insights, plateau detection, volume balance advice, and tactical target for today's ${activeSplit}.
+`;
+
+        const response = await openai.beta.chat.completions.parse({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: COACH_SYSTEM_PROMPT },
+            { role: 'user', content: prompt },
+          ],
+          response_format: zodResponseFormat(CoachInsightSchema, 'coach_insights'),
+          temperature: 0.3,
+        });
+
+        const insights = response.choices[0]?.message?.parsed;
+        if (insights) {
+          return res.status(200).json({
+            success: true,
+            source: 'openai-gpt-4o-mini',
+            data: insights,
+          });
+        }
+      } catch (openAiErr) {
+        console.warn(
+          '[OpenAI Coach Error] Falling back to rule-based coach engine:',
+          openAiErr.message
+        );
+      }
+    }
+
+    // Deterministic Rule-Based Coach Engine Fallback
+    const fallbackInsights = generateFallbackCoachInsights({
+      workouts,
+      prs,
+      activeSplit,
+      pushSets,
+      pullSets,
+      legsSets,
+      plateauCandidates,
+    });
+
+    return res.status(200).json({
+      success: true,
+      source: 'smart-rule-fallback',
+      data: fallbackInsights,
+    });
+  } catch (error) {
+    console.error('[AI Coach Controller Error]:', error);
+    return res.status(500).json({ error: 'Internal server error generating coach insights' });
   }
 };

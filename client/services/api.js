@@ -181,3 +181,54 @@ export async function checkBackendHealth() {
     return { status: 'offline', error: err.message };
   }
 }
+
+/**
+ * Fetch AI Strength Coach insights, plateau detection, and progressive overload prescriptions
+ */
+export async function fetchCoachInsights(activeSplit, mode) {
+  try {
+    const client = getClient();
+    const localWorkouts = await getLocalWorkouts().catch(() => []);
+    const localPRs = await getLocalPRs().catch(() => []);
+
+    const response = await client.post('/api/ai/coach-insights', {
+      activeSplit,
+      localWorkouts,
+      localPRs,
+    });
+
+    if (response.data && response.data.success) {
+      return response.data.data;
+    }
+  } catch (err) {
+    console.warn(
+      '[Coach API Warning] Cloud fetch coach insights failed, using local fallback:',
+      err.message
+    );
+  }
+
+  // Pure offline fallback generator if server is completely unreachable
+  const localWorkouts = await getLocalWorkouts().catch(() => []);
+  const localPRs = await getLocalPRs().catch(() => []);
+  return {
+    status: localWorkouts.length > 0 ? 'optimal' : 'getting_started',
+    headline: localWorkouts.length > 0 ? 'Progressive Overload Active' : 'Welcome to TrackIt AI Coach',
+    overview:
+      localWorkouts.length > 0
+        ? `Tracking ${localWorkouts.length} local session(s). Focus on consistent rep cadence and progressive overload.`
+        : 'Complete your first workout to unlock automated plateau detection and volume balancing.',
+    plateauAlerts: [],
+    volumeBalance: {
+      pushSets: 0,
+      pullSets: 0,
+      legsSets: 0,
+      summary: 'Keep balanced training across push, pull, and leg movements.',
+    },
+    todayTarget: {
+      splitFocus: activeSplit || 'Active Split',
+      keyExercise: 'Primary Lift',
+      recommendedAction: `Focus on progressive overload for today's ${activeSplit || 'session'}.`,
+    },
+    prsHighlighted: localPRs.slice(0, 3).map((p) => `${p.exerciseName}: ${p.maxWeight}kg`),
+  };
+}
